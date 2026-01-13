@@ -40,6 +40,20 @@ app = FastAPI(
     version="1.0.0"
 )
 
+@app.on_event("startup")
+async def startup_event():
+    from database import get_db_connection
+    from schemas import init_database
+    try:
+        conn = get_db_connection()
+        init_database(conn)
+        logging.info("✅ База данных успешно инициализирована")
+    except Exception as e:
+        logging.error(f"❌ Ошибка инициализации БД: {e}")
+        # Не вызываем raise — иначе сервер не запустится
+    finally:
+        conn.close()
+
 # === CORS — УБРАНЫ ПРОБЕЛЫ! ===
 app.add_middleware(
     CORSMiddleware,
@@ -1267,20 +1281,20 @@ def log_account_deletion(telegram_id: int):
         conn.commit()
 
 # === ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ ПРИ СТАРТЕ ===
-def initialize_database():
-    from database import get_db_connection
-    from schemas import init_database
-    try:
-        conn = get_db_connection()
-        init_database(conn)
-        logging.info("✅ База данных успешно инициализирована")
-    except Exception as e:
-        logging.error(f"❌ Ошибка инициализации БД: {e}")
-        raise
-    finally:
-        conn.close()
+# def initialize_database():
+#     from database import get_db_connection
+#     from schemas import init_database
+#     try:
+#         conn = get_db_connection()
+#         init_database(conn)
+#         logging.info("✅ База данных успешно инициализирована")
+#     except Exception as e:
+#         logging.error(f"❌ Ошибка инициализации БД: {e}")
+#         raise
+#     finally:
+#         conn.close()
 
-initialize_database()
+# initialize_database()
 
 
 if __name__ == "__main__":
