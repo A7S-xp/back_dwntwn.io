@@ -51,7 +51,8 @@ async def startup_event():
         cursor = conn.cursor() # ОБЯЗАТЕЛЬНО создаем курсор
         # Опасно: DROP TABLE удалит всех клиентов при каждом перезапуске! 
         # Оставьте это только для одного запуска, потом удалите.
-        cursor.execute("DROP TABLE IF EXISTS clients CASCADE") 
+        cursor.execute("DROP TABLE IF EXISTS transactions, gifts, notifications, staff, clients, user_notifications CASCADE")
+        conn.commit()
         init_database(conn)
         logging.info("✅ База данных успешно инициализирована")
     except Exception as e:
