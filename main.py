@@ -20,6 +20,8 @@ from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+import html
+import ipaddress
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -981,12 +983,6 @@ async def anniversary_check(request: Request):
         conn.commit()
         return {"status": "ok", "anniversaries": results}
 
-from fastapi import Request
-import aiohttp
-import asyncio
-import html
-import ipaddress
-
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
     """
@@ -1160,6 +1156,7 @@ async def telegram_webhook(request: Request):
     except Exception as e:
         logging.error(f"Ошибка в /webhook: {e}")
         return {"ok": False}
+
 # === HEALTH CHECK ===
 @app.get("/health")
 async def health_check():
@@ -1169,7 +1166,6 @@ class BroadcastRequest(BaseModel):
     message: str
     link: Optional[str] = None
     image_url: Optional[HttpUrl] = None  # Валидация URL
-
 
 @app.post("/api/admin/broadcast")
 @limiter.limit("3/minute")
@@ -1260,6 +1256,7 @@ async def send_broadcast(request: Request, user: AuthUser = Depends(require_admi
         "total": len(clients),
         "failed": len(failed_ids)
     }
+
 def log_account_deletion(telegram_id: int):
     with get_db() as conn:
         cursor = conn.cursor()
@@ -1268,3 +1265,19 @@ def log_account_deletion(telegram_id: int):
             VALUES (%s, 'account_deleted', %s)
         """, (telegram_id, "Аккаунт удалён"))
         conn.commit()
+
+# === ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ ПРИ СТАРТЕ ===
+def initialize_database():
+    from database import get_db_connection
+    from schemas import init_database
+    try:
+        conn = get_db_connection()
+        init_database(conn)
+        logging.info("✅ База данных успешно инициализирована")
+    except Exception as e:
+        logging.error(f"❌ Ошибка инициализации БД: {e}")
+        raise
+    finally:
+        conn.close()
+
+initialize_database()
