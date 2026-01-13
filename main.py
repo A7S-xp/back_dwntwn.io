@@ -1281,3 +1281,11 @@ def initialize_database():
         conn.close()
 
 initialize_database()
+
+
+if __name__ == "__main__":
+    import uvicorn
+    # Получаем порт из переменной окружения, или используем 8000 по умолчанию
+    port = int(os.getenv("PORT", 8000))
+    logging.info(f"🚀 Запуск сервера на порту {port}")
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
