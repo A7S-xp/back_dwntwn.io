@@ -15,6 +15,7 @@ import asyncio
 import aiohttp
 from pydantic import BaseModel, HttpUrl
 from typing import Optional
+import uvicorn
 
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -1032,7 +1033,7 @@ async def telegram_webhook(request: Request):
 
         # === 2. Очистка пробелов ===
         bot_token = bot_token.strip()
-        backend_url = os.getenv("BACKEND_URL", "https://dwntwn-loyalty-backend.onrender.com").strip().rstrip('/')
+        backend_url = os.getenv("BACKEND_URL", "https://back-dwntwn-io.onrender.com").strip().rstrip('/')
         web_app_url = "https://dwntwn-loyalty-frontend-io.vercel.app".strip()
         send_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
 
@@ -1299,7 +1300,6 @@ def log_account_deletion(telegram_id: int):
 
 if __name__ == "__main__":
     import uvicorn
-    # Получаем порт из переменной окружения, или используем 8000 по умолчанию
     port = int(os.getenv("PORT", 8000))
     logging.info(f"🚀 Запуск сервера на порту {port}")
     uvicorn.run("main:app", host="0.0.0.0", port=port)
