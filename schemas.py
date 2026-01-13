@@ -1,22 +1,9 @@
-# schemas.py
-INITIAL_GIFTS = [
-    ("Американо", 100),
-    ("Круассан", 150),
-    ("Двойной эспрессо", 80),
-    ("Капучино", 120)
-]
-
-INITIAL_NOTIFICATIONS = [
-    ("novelty", "Лавандовый латте", "Нежный вкус прованской лаванды в вашей чашке.", 30),
-    ("promotion", "Приведи друга", "Приведи друга — получи 50 бонусов!", 14),
-    ("announcement", "Мастер-класс", "Завтра — бесплатный мастер-класс по латте-арту!", 1)
-]
+from datetime import datetime, timedelta
 
 def init_database(conn):
-    """Инициализация базы данных"""
     cursor = conn.cursor()
     
-    # Таблица клиентов
+    # 1. Клиенты (добавлено поле phone)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS clients (
             id SERIAL PRIMARY KEY,
@@ -25,6 +12,7 @@ def init_database(conn):
             first_name VARCHAR(50) NOT NULL,
             last_name VARCHAR(50) NOT NULL,
             email VARCHAR(100),
+            phone VARCHAR(20),
             birth_date DATE,
             gender VARCHAR(10),
             points INTEGER DEFAULT 0,
@@ -33,7 +21,7 @@ def init_database(conn):
         )
     ''')
     
-    # Таблица сотрудников
+    # 2. Сотрудники
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS staff (
             id SERIAL PRIMARY KEY,
@@ -44,18 +32,19 @@ def init_database(conn):
         )
     ''')
     
-    # Таблица подарков
+    # 3. Подарки (добавлен image_url)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS gifts (
             id SERIAL PRIMARY KEY,
             name VARCHAR(100) NOT NULL,
             points_cost INTEGER NOT NULL,
+            image_url VARCHAR(255),
             is_active BOOLEAN DEFAULT true,
             created_at TIMESTAMP DEFAULT NOW()
         )
     ''')
     
-    # Таблица уведомлений
+    # 4. Уведомления
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS notifications (
             id SERIAL PRIMARY KEY,
@@ -68,20 +57,22 @@ def init_database(conn):
         )
     ''')
     
-    # Таблица транзакций
+    # 5. Транзакции (client_id теперь NULLABLE, добавлены target поля для админки)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS transactions (
             id SERIAL PRIMARY KEY,
-            client_id INTEGER NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+            client_id INTEGER REFERENCES clients(id) ON DELETE CASCADE,
             staff_id INTEGER REFERENCES staff(id) ON DELETE SET NULL,
-            type VARCHAR(20) NOT NULL CHECK (type IN ('purchase', 'social', 'gift', 'manual', 'birthday')),
-            points_change INTEGER NOT NULL,
+            type VARCHAR(50) NOT NULL,
+            points_change INTEGER NOT NULL DEFAULT 0,
             description TEXT,
+            target_type VARCHAR(50),
+            target_id INTEGER,
             created_at TIMESTAMP DEFAULT NOW()
         )
     ''')
 
-    # Таблица персональных уведомлений
+    # 6. Персональные уведомления
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS user_notifications (
             id SERIAL PRIMARY KEY,
@@ -93,25 +84,12 @@ def init_database(conn):
         )
     ''')
     
-    # Добавление демо-данных
-    cursor.execute("SELECT COUNT(*) as cnt FROM gifts")
-    if cursor.fetchone()['cnt'] == 0:
-        cursor.executemany(
-            "INSERT INTO gifts (name, points_cost) VALUES (%s, %s)",
-            INITIAL_GIFTS
-        )
+    conn.commit()
     
-    cursor.execute("SELECT COUNT(*) as cnt FROM notifications")
-    if cursor.fetchone()['cnt'] == 0:
-        from datetime import datetime, timedelta
-        now = datetime.utcnow()
-        notifications = [
-            (nt[0], nt[1], nt[2], now + timedelta(days=nt[3]))
-            for nt in INITIAL_NOTIFICATIONS
-        ]
-        cursor.executemany(
-            "INSERT INTO notifications (type, title, description, expires_at) VALUES (%s, %s, %s, %s)",
-            notifications
-        )
+    # Заполнение демо-данными (только если пусто)
+    cursor.execute("SELECT COUNT(*) FROM gifts")
+    if cursor.fetchone()['count'] == 0:
+        gifts = [("Американо", 100), ("Круассан", 150), ("Капучино", 120)]
+        cursor.executemany("INSERT INTO gifts (name, points_cost) VALUES (%s, %s)", gifts)
     
     conn.commit()

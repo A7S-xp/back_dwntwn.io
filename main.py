@@ -45,15 +45,19 @@ app = FastAPI(
 async def startup_event():
     from database import get_db_connection
     from schemas import init_database
+    conn = None
     try:
         conn = get_db_connection()
+        cursor = conn.cursor() # ОБЯЗАТЕЛЬНО создаем курсор
+        # Опасно: DROP TABLE удалит всех клиентов при каждом перезапуске! 
+        # Оставьте это только для одного запуска, потом удалите.
+        cursor.execute("DROP TABLE IF EXISTS clients CASCADE") 
         init_database(conn)
         logging.info("✅ База данных успешно инициализирована")
     except Exception as e:
         logging.error(f"❌ Ошибка инициализации БД: {e}")
-        # Не вызываем raise — иначе сервер не запустится
     finally:
-        conn.close()
+        if conn: conn.close()
 
 # === CORS — УБРАНЫ ПРОБЕЛЫ! ===
 app.add_middleware(
@@ -104,10 +108,10 @@ def normalize_phone(phone: str | None) -> str | None:
 def generate_card_number(conn) -> str:
     prefix = "DTLC"
     max_attempts = 10
+    cursor = conn.cursor()
     for _ in range(max_attempts):
         suffix = ''.join(secrets.choice(string.digits) for _ in range(6))
         card_number = f"{prefix}-{suffix}"
-        cursor = conn.cursor()
         cursor.execute("SELECT 1 FROM clients WHERE card_number = %s", (card_number,))
         if not cursor.fetchone():
             return card_number
@@ -718,6 +722,7 @@ async def delete_gift(request: Request, user: AuthUser = Depends(require_admin))
         if not gift:
             raise HTTPException(status_code=404, detail="Подарок не найден")
         cursor.execute("DELETE FROM gifts WHERE id = %s", (gift_id,))
+        # В main.py внутри delete_gift измените запрос:
         cursor.execute("""
             INSERT INTO transactions (staff_id, type, description, target_type, target_id, points_change)
             VALUES ((SELECT id FROM staff WHERE telegram_id = %s), 'gift_deleted', %s, 'gift', %s, 0)
