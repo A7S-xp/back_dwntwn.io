@@ -48,11 +48,6 @@ async def startup_event():
     conn = None
     try:
         conn = get_db_connection()
-        cursor = conn.cursor() # ОБЯЗАТЕЛЬНО создаем курсор
-        # Опасно: DROP TABLE удалит всех клиентов при каждом перезапуске! 
-        # Оставьте это только для одного запуска, потом удалите.
-        cursor.execute("DROP TABLE IF EXISTS transactions, gifts, notifications, staff, clients, user_notifications CASCADE")
-        conn.commit()
         init_database(conn)
         logging.info("✅ База данных успешно инициализирована")
     except Exception as e:
@@ -497,23 +492,45 @@ async def get_gifts(request: Request, user: AuthUser = Depends(get_current_user)
 @app.post("/api/client/delete-account")
 @limiter.limit("5/minute")
 async def delete_account(request: Request, user: AuthUser = Depends(get_current_user)):
+    """
+    Безопасное удаление аккаунта клиента и всех связанных данных.
+    """
     if user.role != "client":
         raise HTTPException(status_code=403, detail="Only clients can delete their account")
     
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM clients WHERE telegram_id = %s", (user.telegram_id,))
-        cursor.execute("DELETE FROM transactions WHERE client_id IN (SELECT id FROM clients WHERE telegram_id = %s)", (user.telegram_id,))
-        cursor.execute("DELETE FROM user_notifications WHERE telegram_id = %s", (user.telegram_id,))
-        conn.commit()
-    
-    log_account_deletion(user.telegram_id)
-    
+        try:
+            # 1. Сначала удаляем уведомления пользователя
+            cursor.execute("DELETE FROM user_notifications WHERE telegram_id = %s", (user.telegram_id,))
+            
+            # 2. Получаем внутренний ID клиента для удаления транзакций
+            cursor.execute("SELECT id FROM clients WHERE telegram_id = %s", (user.telegram_id,))
+            client_row = cursor.fetchone()
+            
+            if client_row:
+                client_id = client_row["id"]
+                # 3. Удаляем все транзакции, связанные с этим клиентом
+                cursor.execute("DELETE FROM transactions WHERE client_id = %s", (client_id,))
+                
+                # 4. Удаляем самого клиента
+                cursor.execute("DELETE FROM clients WHERE id = %s", (client_id,))
+            
+            conn.commit()
+            logging.info(f"User {user.telegram_id} deleted successfully.")
+            
+        except Exception as e:
+            conn.rollback()
+            logging.error(f"Error during account deletion for {user.telegram_id}: {e}")
+            raise HTTPException(status_code=500, detail="Ошибка при удалении данных из базы")
+
+    # Прощальное сообщение отправляем ПОСЛЕ удаления из БД
     farewell_text = (
         "🙏 <b>Спасибо, что пользовались нашей программой лояльности!</b>\n"
-        "Если захотите вернуться — мы всегда будем рады вас снова!\n"
+        "Ваши данные полностью удалены. Если захотите вернуться — мы всегда будем рады вам снова!\n"
         "До новых встреч в DWNTWN!"
     )
+    # Используем create_task, чтобы не задерживать ответ пользователю
     asyncio.create_task(send_telegram_message(user.telegram_id, farewell_text))
     
     return {"status": "ok", "message": "Ваш аккаунт успешно удалён."}
