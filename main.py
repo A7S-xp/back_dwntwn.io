@@ -918,13 +918,19 @@ async def create_gift(request: Request, user: AuthUser = Depends(require_admin))
 
         return gift
 
+
 @app.post("/api/admin/audit")
 @limiter.limit("5/minute")
 async def get_admin_audit(request: Request, user: AuthUser = Depends(require_admin)):
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT t.id, t.description, t.created_at, s.name AS staff_name
+            SELECT 
+                t.id, 
+                t.type,
+                t.description, 
+                t.created_at, 
+                s.name AS staff_name
             FROM transactions t
             LEFT JOIN staff s ON t.staff_id = s.id
             WHERE t.type IN (
