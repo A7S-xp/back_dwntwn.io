@@ -87,9 +87,9 @@ def init_database(conn):
     conn.commit()
     
     # Заполнение демо-данными (только если пусто)
-    cursor.execute("SELECT COUNT(*) FROM gifts")
-    if cursor.fetchone()['count'] == 0:
-        gifts = [("Американо", 100), ("Круассан", 150), ("Капучино", 120)]
-        cursor.executemany("INSERT INTO gifts (name, points_cost) VALUES (%s, %s)", gifts)
+    # cursor.execute("SELECT COUNT(*) FROM gifts")
+    # if cursor.fetchone()['count'] == 0:
+    #     gifts = [("Американо", 100), ("Круассан", 150), ("Капучино", 120)]
+    #     cursor.executemany("INSERT INTO gifts (name, points_cost) VALUES (%s, %s)", gifts)
     
-    conn.commit()
+    # conn.commit()

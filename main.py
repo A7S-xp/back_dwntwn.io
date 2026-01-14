@@ -266,6 +266,33 @@ async def send_telegram_message(telegram_id: int, text: str):
     except Exception as e:
         logging.error(f"Ошибка отправки сообщения {telegram_id}: {e}")
 
+async def broadcast_new_gift(gift_name: str, points_cost: int):
+    """
+    Рассылает уведомление всем зарегистрированным клиентам о новом подарке.
+    """
+    with get_db() as conn:
+        cursor = conn.cursor()
+        # Получаем ID всех клиентов
+        cursor.execute("SELECT telegram_id FROM clients")
+        users = cursor.fetchall()
+
+    if not users:
+        return
+
+    text = (
+        f"🎁 <b>У нас новый подарок!</b>\n\n"
+        f"Теперь вы можете обменять баллы на: <b>{gift_name}</b>\n"
+        f"Стоимость: <b>{points_cost}</b> баллов.\n\n"
+        f"Заглядывайте в приложение, чтобы проверить свой баланс! ☕️"
+    )
+
+    for user in users:
+        try:
+            await send_telegram_message(user['telegram_id'], text)
+            await asyncio.sleep(0.05) 
+        except Exception as e:
+            logging.error(f"Ошибка рассылки для {user['telegram_id']}: {e}")
+
 async def send_welcome_message(telegram_id: int):
     bot_token = os.getenv("BOT_TOKEN")
     if not bot_token:
@@ -806,6 +833,25 @@ async def create_notification(request: Request, user: AuthUser = Depends(require
         return {"status": "ok", "notification_id": notif_id}
 
 
+# @app.post("/api/admin/create-gift")
+# @limiter.limit("5/minute")
+# async def create_gift(request: Request, user: AuthUser = Depends(require_admin)):
+#     body = await request.json()
+#     name = body.get("name")
+#     points_cost = body.get("points_cost")
+#     image_url = body.get("image_url")
+#     if not name or not points_cost:
+#         raise HTTPException(status_code=400, detail="name and points_cost required")
+#     with get_db() as conn:
+#         cursor = conn.cursor()
+#         cursor.execute("SELECT id FROM gifts WHERE name = %s AND points_cost = %s", (name, points_cost))
+#         if cursor.fetchone():
+#             raise HTTPException(status_code=400, detail="Подарок уже существует")
+#         cursor.execute("INSERT INTO gifts (name, points_cost, image_url) VALUES (%s, %s, %s) RETURNING id, name, points_cost, image_url", (name, points_cost, image_url))
+#         gift = cursor.fetchone()
+#         conn.commit()
+#         return gift
+
 @app.post("/api/admin/create-gift")
 @limiter.limit("5/minute")
 async def create_gift(request: Request, user: AuthUser = Depends(require_admin)):
@@ -813,16 +859,29 @@ async def create_gift(request: Request, user: AuthUser = Depends(require_admin))
     name = body.get("name")
     points_cost = body.get("points_cost")
     image_url = body.get("image_url")
+
     if not name or not points_cost:
         raise HTTPException(status_code=400, detail="name and points_cost required")
+
     with get_db() as conn:
         cursor = conn.cursor()
+        
         cursor.execute("SELECT id FROM gifts WHERE name = %s AND points_cost = %s", (name, points_cost))
         if cursor.fetchone():
             raise HTTPException(status_code=400, detail="Подарок уже существует")
-        cursor.execute("INSERT INTO gifts (name, points_cost, image_url) VALUES (%s, %s, %s) RETURNING id, name, points_cost, image_url", (name, points_cost, image_url))
+        
+        cursor.execute("""
+            INSERT INTO gifts (name, points_cost, image_url, is_active) 
+            VALUES (%s, %s, %s, true) 
+            RETURNING id, name, points_cost, image_url
+        """, (name, points_cost, image_url))
+        
         gift = cursor.fetchone()
         conn.commit()
+
+        if gift:
+            asyncio.create_task(broadcast_new_gift(gift['name'], gift['points_cost']))
+
         return gift
 
 
