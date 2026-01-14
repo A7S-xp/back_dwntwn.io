@@ -810,32 +810,47 @@ async def get_transactions(request: Request, user: AuthUser = Depends(require_ad
 @limiter.limit("5/minute")
 async def create_notification(request: Request, user: AuthUser = Depends(require_admin)):
     body = await request.json()
-    type_ = body.get("type")
+    notif_type = body.get("type")
     title = body.get("title")
     description = body.get("description")
-    days_valid = body.get("days_valid", 7)
     image_url = body.get("image_url")
-    if not type_ or not title or not description:
-        raise HTTPException(status_code=400, detail="Missing required fields")
-    if type_ not in ("promotion", "novelty", "announcement"):
-        raise HTTPException(status_code=400, detail="Invalid notification type")
+    days_valid = body.get("days_valid", 7)
+
+    if not title or not description:
+        raise HTTPException(status_code=400, detail="Title and description required")
+
+    expires_at = datetime.utcnow() + timedelta(days=days_valid)
+
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT id FROM notifications WHERE type = %s AND title = %s AND description = %s", (type_, title, description))
-        if cursor.fetchone():
-            raise HTTPException(status_code=400, detail="Такое уведомление уже существует")
-        expires_at = datetime.utcnow() + timedelta(days=days_valid)
+        
+        # 1. Создаем уведомление
         cursor.execute("""
-            INSERT INTO notifications (type, title, description, expires_at, image_url)
-            VALUES (%s, %s, %s, %s, %s) RETURNING id
-        """, (type_, title, description, expires_at, image_url))
-        notif_id = cursor.fetchone()["id"]
+            INSERT INTO notifications (type, title, description, image_url, expires_at)
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING id
+        """, (notif_type, title, description, image_url, expires_at))
+        
+        notif_id = cursor.fetchone()[0]
+
+        # 2. Логируем действие без лишних меток вроде [announcement]
+        # Используем понятное описание для аудита
+        audit_desc = f"Создано уведомление: «{title}» (тип: {notif_type})"
+        
         cursor.execute("""
             INSERT INTO transactions (staff_id, type, description, target_type, target_id, points_change)
-            VALUES ((SELECT id FROM staff WHERE telegram_id = %s), 'notification_created', %s, 'notification', %s, 0)
-        """, (user.telegram_id, title, notif_id))
+            VALUES (
+                (SELECT id FROM staff WHERE telegram_id = %s),
+                'notification_created',
+                %s,
+                'notification',
+                %s,
+                0
+            )
+        """, (user.telegram_id, audit_desc, notif_id))
+        
         conn.commit()
-        return {"status": "ok", "notification_id": notif_id}
+        return {"status": "ok", "id": notif_id}
 
 
 # @app.post("/api/admin/create-gift")
@@ -915,7 +930,7 @@ async def get_admin_audit(request: Request, user: AuthUser = Depends(require_adm
             WHERE t.type IN (
                 'gift_deleted', 
                 'gift_created', 
-                'notification_created', 
+                'notification_created',  
                 'notification_deleted', 
                 'broadcast_sent'
             )
