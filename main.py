@@ -750,26 +750,31 @@ async def get_all_gifts(request: Request, user: AuthUser = Depends(require_admin
         cursor.execute("SELECT id, name, points_cost, image_url FROM gifts ORDER BY points_cost")
         return cursor.fetchall()
 
-
 @app.post("/api/admin/delete-gift")
 @limiter.limit("5/minute")
 async def delete_gift(request: Request, user: AuthUser = Depends(require_admin)):
     body = await request.json()
     gift_id = body.get("gift_id")
+    
     if not gift_id:
         raise HTTPException(status_code=400, detail="gift_id required")
+
     with get_db() as conn:
         cursor = conn.cursor()
+        
         cursor.execute("SELECT name FROM gifts WHERE id = %s", (gift_id,))
         gift = cursor.fetchone()
         if not gift:
             raise HTTPException(status_code=404, detail="Подарок не найден")
+
         cursor.execute("DELETE FROM gifts WHERE id = %s", (gift_id,))
-        # В main.py внутри delete_gift измените запрос:
+        
+        audit_desc = f"Удален подарок: «{gift['name']}» (ID: {gift_id})"
         cursor.execute("""
             INSERT INTO transactions (staff_id, type, description, target_type, target_id, points_change)
             VALUES ((SELECT id FROM staff WHERE telegram_id = %s), 'gift_deleted', %s, 'gift', %s, 0)
-        """, (user.telegram_id, f"Удалён подарок: {gift['name']}", gift_id))
+        """, (user.telegram_id, audit_desc, gift_id))
+        
         conn.commit()
         return {"status": "ok"}
 
@@ -877,13 +882,26 @@ async def create_gift(request: Request, user: AuthUser = Depends(require_admin))
         """, (name, points_cost, image_url))
         
         gift = cursor.fetchone()
-        conn.commit()
 
         if gift:
+            audit_desc = f"Создан новый подарок: «{name}» за {points_cost} бонусов"
+            cursor.execute("""
+                INSERT INTO transactions (staff_id, type, description, target_type, target_id, points_change)
+                VALUES (
+                    (SELECT id FROM staff WHERE telegram_id = %s),
+                    'gift_created',
+                    %s,
+                    'gift',
+                    %s,
+                    0
+                )
+            """, (user.telegram_id, audit_desc, gift['id']))
+            
+            conn.commit()
+
             asyncio.create_task(broadcast_new_gift(gift['name'], gift['points_cost']))
 
         return gift
-
 
 @app.post("/api/admin/audit")
 @limiter.limit("5/minute")
@@ -894,7 +912,13 @@ async def get_admin_audit(request: Request, user: AuthUser = Depends(require_adm
             SELECT t.id, t.description, t.created_at, s.name AS staff_name
             FROM transactions t
             LEFT JOIN staff s ON t.staff_id = s.id
-            WHERE t.type IN ('gift_deleted', 'notification_created')
+            WHERE t.type IN (
+                'gift_deleted', 
+                'gift_created', 
+                'notification_created', 
+                'notification_deleted', 
+                'broadcast_sent'
+            )
             ORDER BY t.created_at DESC
         """)
         return cursor.fetchall()
