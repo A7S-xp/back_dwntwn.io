@@ -674,8 +674,8 @@ async def add_points(request: Request, user: AuthUser = Depends(require_staff)):
     purchase_amount = body.get("purchase_amount")
     if not client_id or not purchase_amount:
         raise HTTPException(status_code=400, detail="client_id and purchase_amount required")
-    if purchase_amount > 4999:
-        raise HTTPException(status_code=400, detail="Максимальная сумма покупки — 4999 руб.")
+    if purchase_amount > 2500:
+        raise HTTPException(status_code=400, detail="Максимальная сумма покупки — 2500 руб.")
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT points, total_earned_points, telegram_id FROM clients WHERE id = %s", (client_id,))
