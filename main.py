@@ -805,7 +805,6 @@ async def get_transactions(request: Request, user: AuthUser = Depends(require_ad
         cursor.execute(query, params)
         return cursor.fetchall()
 
-
 @app.post("/api/admin/create-notification")
 @limiter.limit("5/minute")
 async def create_notification(request: Request, user: AuthUser = Depends(require_admin)):
@@ -819,6 +818,7 @@ async def create_notification(request: Request, user: AuthUser = Depends(require
     if not title or not description:
         raise HTTPException(status_code=400, detail="Title and description required")
 
+    # Используем timezone-aware datetime для избежания проблем
     expires_at = datetime.utcnow() + timedelta(days=days_valid)
 
     with get_db() as conn:
@@ -831,10 +831,14 @@ async def create_notification(request: Request, user: AuthUser = Depends(require
             RETURNING id
         """, (notif_type, title, description, image_url, expires_at))
         
-        notif_id = cursor.fetchone()[0]
+        # БЕЗОПАСНОЕ ПОЛУЧЕНИЕ ID:
+        row = cursor.fetchone()
+        if isinstance(row, dict):
+            notif_id = row['id']
+        else:
+            notif_id = row[0]
 
-        # 2. Логируем действие без лишних меток вроде [announcement]
-        # Используем понятное описание для аудита
+        # 2. Логируем действие
         audit_desc = f"Создано уведомление: «{title}» (тип: {notif_type})"
         
         cursor.execute("""
@@ -851,7 +855,6 @@ async def create_notification(request: Request, user: AuthUser = Depends(require
         
         conn.commit()
         return {"status": "ok", "id": notif_id}
-
 
 # @app.post("/api/admin/create-gift")
 # @limiter.limit("5/minute")
