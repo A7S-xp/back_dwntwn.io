@@ -515,6 +515,19 @@ async def staff_login(request: Request, user: AuthUser = Depends(require_staff))
 async def get_staff_transactions(request: Request, user: AuthUser = Depends(require_staff)):
     with get_db() as conn:
         cursor = conn.cursor()
+        
+        # 1. Получаем ID сотрудника. 
+        # Используем безопасное извлечение, чтобы не было KeyError
+        cursor.execute("SELECT id FROM staff WHERE telegram_id = %s", (user.telegram_id,))
+        staff_row = cursor.fetchone()
+        
+        if not staff_row:
+            return []
+            
+        # Универсальное получение ID (для словаря или кортежа)
+        s_id = staff_row["id"] if isinstance(staff_row, dict) else staff_row[0]
+
+        # 2. Основной запрос истории
         cursor.execute("""
             SELECT 
                 t.id,
@@ -524,20 +537,32 @@ async def get_staff_transactions(request: Request, user: AuthUser = Depends(requ
                 t.created_at
             FROM transactions t
             JOIN clients c ON t.client_id = c.id
-            WHERE t.staff_id = (SELECT id FROM staff WHERE telegram_id = %s)
+            WHERE t.staff_id = %s
             ORDER BY t.created_at DESC
             LIMIT 100
-        """, (user.telegram_id,))
+        """, (s_id,))
+        
         rows = cursor.fetchall()
         result = []
+        
         for row in rows:
+            # Безопасно достаем дату
+            raw_date = row["created_at"]
+            
+            # Превращаем в строку только если это объект datetime
+            if isinstance(raw_date, datetime):
+                dt_str = raw_date.strftime("%Y-%m-%d %H:%M")
+            else:
+                dt_str = str(raw_date) if raw_date else ""
+
             result.append({
                 "id": row["id"],
                 "client_name": row["client_name"],
                 "points_change": row["points_change"],
                 "description": row["description"],
-                "created_at": row["created_at"].isoformat() if isinstance(row["created_at"], datetime) else str(row["created_at"])
+                "created_at": dt_str
             })
+            
         return result
 
 @app.post("/api/staff/client-by-card")
