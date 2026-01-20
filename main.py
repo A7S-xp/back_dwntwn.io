@@ -602,9 +602,6 @@ async def get_client_by_phone(request: Request, user: AuthUser = Depends(require
             "phone": client["phone"]
         }
 
-
-from datetime import datetime, timedelta
-
 @app.post("/api/staff/add-points")
 @limiter.limit("10/minute")
 async def add_points(request: Request, user: AuthUser = Depends(require_staff)):
@@ -615,46 +612,53 @@ async def add_points(request: Request, user: AuthUser = Depends(require_staff)):
     if not client_id or not purchase_amount:
         raise HTTPException(status_code=400, detail="client_id and purchase_amount required")
     
-    # 1. Базовая проверка разовой покупки
     if purchase_amount > 2500:
         raise HTTPException(status_code=400, detail="Максимальная сумма разовой покупки — 2500 руб.")
     
     with get_db() as conn:
+        # Используем обычный курсор или DictCursor, но обрабатываем результат универсально
         cursor = conn.cursor()
         
         # --- БЛОК ПРОВЕРКИ ЛИМИТА ЗА ЧАС ---
-        # Ищем все транзакции типа 'purchase' за последний час для этого клиента
         one_hour_ago = datetime.utcnow() - timedelta(hours=1)
         
-        # Чтобы точно посчитать сумму покупок, в идеале нужно поле purchase_amount в БД.
-        # Если его нет, мы можем суммировать баллы, но это менее точно из-за уровней лояльности.
-        # Предположим, мы добавили колонку purchase_amount или анализируем историю:
-        
+        # Используем регулярное выражение для извлечения суммы из строки description
+        # и даем колонке имя 'total_spent', чтобы избежать KeyError
         cursor.execute("""
-            SELECT SUM(CAST(substring(description from 'Покупка на ([0-9.]+) руб') AS FLOAT))
+            SELECT SUM(CAST(substring(description from 'Покупка на ([0-9.]+) руб') AS FLOAT)) as total_spent
             FROM transactions 
             WHERE client_id = %s 
               AND type = 'purchase' 
               AND created_at > %s
         """, (client_id, one_hour_ago))
         
-        total_spent_last_hour = cursor.fetchone()[0] or 0
+        row = cursor.fetchone()
         
+        # Универсальное извлечение значения (работает и с DictCursor, и с обычным)
+        if row:
+            # Если это словарь, берем по ключу, если кортеж - по индексу
+            total_spent_last_hour = (row['total_spent'] if isinstance(row, dict) else row[0]) or 0
+        else:
+            total_spent_last_hour = 0
+            
         if (total_spent_last_hour + purchase_amount) > 2500:
             allowed_now = 2500 - total_spent_last_hour
             raise HTTPException(
                 status_code=403, 
-                detail=f"Лимит покупок превышен (2500 руб/час). "
-                       f"За последний час куплено на {total_spent_last_hour} руб. "
-                       f"Доступно для начисления: {max(0, allowed_now)} руб."
+                detail=f"Лимит превышен (2500 руб/час). "
+                       f"За час уже начислено на {total_spent_last_hour} руб. "
+                       f"Доступно: {max(0, allowed_now)} руб."
             )
         # --- КОНЕЦ ПРОВЕРКИ ---
 
+        # Получаем данные клиента
         cursor.execute("SELECT points, total_earned_points, telegram_id FROM clients WHERE id = %s", (client_id,))
         client = cursor.fetchone()
+        
         if not client:
             raise HTTPException(status_code=404, detail="Клиент не найден")
             
+        # Рассчитываем баллы
         level = get_level(client["total_earned_points"])
         multiplier = {"PLATINA": 0.10, "GOLD": 0.07, "SILVER": 0.05, "BRONZE": 0.03, "IRON": 0.01}[level]
         
@@ -662,11 +666,10 @@ async def add_points(request: Request, user: AuthUser = Depends(require_staff)):
         new_points = client["points"] + points
         new_total = client["total_earned_points"] + points
         
-        # Обновляем клиента
+        # Обновляем базу
         cursor.execute("UPDATE clients SET points = %s, total_earned_points = %s WHERE id = %s", 
                        (new_points, new_total, client_id))
         
-        # Записываем транзакцию
         cursor.execute("""
             INSERT INTO transactions (client_id, staff_id, type, points_change, description)
             VALUES (%s, (SELECT id FROM staff WHERE telegram_id = %s), 'purchase', %s, %s)
@@ -674,7 +677,7 @@ async def add_points(request: Request, user: AuthUser = Depends(require_staff)):
         
         conn.commit()
         
-        # Отправка уведомления
+        # Уведомление
         message_text = (
             f"🎉 <b>Бонусы начислены!</b>\n\n"
             f"Покупка на {purchase_amount} руб.\n"
