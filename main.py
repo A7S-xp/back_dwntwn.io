@@ -24,10 +24,8 @@ from slowapi.util import get_remote_address
 import html
 import ipaddress
 
-# Настройка логирования
 logging.basicConfig(level=logging.INFO)
 
-# Загружаем .env
 load_dotenv(Path(__file__).parent.parent / ".env")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -55,7 +53,7 @@ async def startup_event():
     finally:
         if conn: conn.close()
 
-# === CORS — УБРАНЫ ПРОБЕЛЫ! ===
+# === CORS  ===
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -74,7 +72,6 @@ app.state.limiter = limiter
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    # Убираем query-параметры (там может быть initData)
     safe_url = str(request.url).split("?")[0]
     logging.info(f"Request: {request.method} {safe_url}")
     response = await call_next(request)
@@ -160,58 +157,6 @@ def validate_telegram_init_data(init_data: str, bot_token: str) -> dict:
         raise HTTPException(status_code=401, detail="Invalid Telegram data")
     return parsed
 
-# Не рабочее((
-# def validate_telegram_init_data(init_data: str, bot_token: str) -> dict:
-#     if not init_data or "hash=" not in init_data:
-#         raise HTTPException(status_code=401, detail="Invalid initData")
-
-#     # 1. Разделяем на пары, НЕ парсим как query string
-#     pairs = []
-#     for part in init_data.split('&'):
-#         if '=' in part:
-#             k, v = part.split('=', 1)
-#             pairs.append((k, v))  # v остаётся в исходном виде (с %7B...)
-
-#     # 2. Извлекаем hash
-#     hash_ = None
-#     clean_pairs = []
-#     for k, v in pairs:
-#         if k == "hash":
-#             hash_ = v
-#         else:
-#             clean_pairs.append((k, v))
-
-#     if not hash_:
-#         raise HTTPException(status_code=401, detail="Missing hash")
-
-#     # 3. Формируем строку ДЛЯ ПОДПИСИ — значения НЕ ДЕКОДИРУЕМ!
-#     data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(clean_pairs))
-
-#     # 4. Генерируем хэш
-#     secret_key = hmac.new(b"WebAppData", bot_token.encode(), hashlib.sha256).digest()
-#     calculated_hash = hmac.new(
-#         secret_key,
-#         data_check_string.encode(),
-#         hashlib.sha256
-#     ).hexdigest()
-
-#     # 5. Сравниваем
-#     if not hmac.compare_digest(calculated_hash, hash_):
-#         raise HTTPException(status_code=401, detail="Invalid Telegram data")
-
-#     # 6. Проверка срока действия (опционально, но рекомендуется)
-#     auth_date_str = dict(clean_pairs).get("auth_date")
-#     if auth_date_str:
-#         try:
-#             auth_date = int(auth_date_str)
-#             if auth_date < int(datetime.utcnow().timestamp()) - 86400:
-#                 raise HTTPException(status_code=401, detail="Init data expired")
-#         except ValueError:
-#             pass  # Игнорируем, если не число
-
-#     # 7. Возвращаем исходные пары (для последующей обработки user)
-#     return dict(clean_pairs)
-
 def extract_telegram_id_from_init_data(init_data: str) -> int:
     parsed = validate_telegram_init_data(init_data, BOT_TOKEN)
     user_data_str = parsed.get("user")
@@ -223,21 +168,6 @@ def extract_telegram_id_from_init_data(init_data: str) -> int:
         return int(user_dict["id"])
     except (ValueError, KeyError, json.JSONDecodeError):
         raise HTTPException(status_code=401, detail="Invalid user data format")
-
-# Не рабочее((
-# def extract_telegram_id_from_init_data(init_data: str) -> int:
-#     parsed = validate_telegram_init_data(init_data, BOT_TOKEN)
-#     user_data_str = parsed.get("user")
-#     if not user_data_str:
-#         raise HTTPException(status_code=401, detail="User data missing in initData")
-#     try:
-#         # Декодируем ТОЛЬКО ПОСЛЕ ВАЛИДАЦИИ
-#         user_json_str = unquote(user_data_str)  # %7B...%7D → {"id":...}
-#         user_dict = json.loads(user_json_str)
-#         return int(user_dict["id"])
-#     except (ValueError, KeyError, json.JSONDecodeError) as e:
-#         logging.error(f"Invalid user data: {user_data_str}, error: {e}")
-#         raise HTTPException(status_code=401, detail="Invalid user data format")
 
 async def send_telegram_message(telegram_id: int, text: str):
     """
@@ -272,7 +202,6 @@ async def broadcast_new_gift(gift_name: str, points_cost: int):
     """
     with get_db() as conn:
         cursor = conn.cursor()
-        # Получаем ID всех клиентов
         cursor.execute("SELECT telegram_id FROM clients")
         users = cursor.fetchall()
 
@@ -328,7 +257,7 @@ async def send_welcome_message(telegram_id: int):
 # === МОДЕЛИ ===
 class AuthUser(BaseModel):
     telegram_id: int
-    role: str  # 'client', 'staff', 'admin'
+    role: str
 
 
 class ClientRegister(BaseModel):
@@ -514,6 +443,21 @@ async def get_gifts(request: Request, user: AuthUser = Depends(get_current_user)
         return cursor.fetchall()
 
 
+@app.get("/api/public/gifts-catalog")
+async def get_public_gifts_catalog():
+    with get_db() as conn:
+        cursor = conn.cursor()
+        # Выбираем только активные подарки
+        # Сортируем: сначала дешевые, потом дорогие
+        cursor.execute("""
+            SELECT id, name, points_cost, image_url 
+            FROM gifts 
+            WHERE is_active = true 
+            ORDER BY points_cost ASC
+        """)
+        return cursor.fetchall()
+
+
 @app.post("/api/client/delete-account")
 @limiter.limit("5/minute")
 async def delete_account(request: Request, user: AuthUser = Depends(get_current_user)):
@@ -526,19 +470,15 @@ async def delete_account(request: Request, user: AuthUser = Depends(get_current_
     with get_db() as conn:
         cursor = conn.cursor()
         try:
-            # 1. Сначала удаляем уведомления пользователя
             cursor.execute("DELETE FROM user_notifications WHERE telegram_id = %s", (user.telegram_id,))
             
-            # 2. Получаем внутренний ID клиента для удаления транзакций
             cursor.execute("SELECT id FROM clients WHERE telegram_id = %s", (user.telegram_id,))
             client_row = cursor.fetchone()
             
             if client_row:
                 client_id = client_row["id"]
-                # 3. Удаляем все транзакции, связанные с этим клиентом
                 cursor.execute("DELETE FROM transactions WHERE client_id = %s", (client_id,))
                 
-                # 4. Удаляем самого клиента
                 cursor.execute("DELETE FROM clients WHERE id = %s", (client_id,))
             
             conn.commit()
@@ -549,13 +489,11 @@ async def delete_account(request: Request, user: AuthUser = Depends(get_current_
             logging.error(f"Error during account deletion for {user.telegram_id}: {e}")
             raise HTTPException(status_code=500, detail="Ошибка при удалении данных из базы")
 
-    # Прощальное сообщение отправляем ПОСЛЕ удаления из БД
     farewell_text = (
         "🙏 <b>Спасибо, что пользовались нашей программой лояльности!</b>\n"
         "Ваши данные полностью удалены. Если захотите вернуться — мы всегда будем рады вам снова!\n"
         "До новых встреч в DWNTWN!"
     )
-    # Используем create_task, чтобы не задерживать ответ пользователю
     asyncio.create_task(send_telegram_message(user.telegram_id, farewell_text))
     
     return {"status": "ok", "message": "Ваш аккаунт успешно удалён."}
@@ -591,7 +529,6 @@ async def get_staff_transactions(request: Request, user: AuthUser = Depends(requ
             LIMIT 100
         """, (user.telegram_id,))
         rows = cursor.fetchall()
-        # Преобразуем created_at в ISO-формат для JS
         result = []
         for row in rows:
             result.append({
@@ -666,33 +603,78 @@ async def get_client_by_phone(request: Request, user: AuthUser = Depends(require
         }
 
 
+from datetime import datetime, timedelta
+
 @app.post("/api/staff/add-points")
 @limiter.limit("10/minute")
 async def add_points(request: Request, user: AuthUser = Depends(require_staff)):
     body = await request.json()
     client_id = body.get("client_id")
     purchase_amount = body.get("purchase_amount")
+    
     if not client_id or not purchase_amount:
         raise HTTPException(status_code=400, detail="client_id and purchase_amount required")
+    
+    # 1. Базовая проверка разовой покупки
     if purchase_amount > 2500:
-        raise HTTPException(status_code=400, detail="Максимальная сумма покупки — 2500 руб.")
+        raise HTTPException(status_code=400, detail="Максимальная сумма разовой покупки — 2500 руб.")
+    
     with get_db() as conn:
         cursor = conn.cursor()
+        
+        # --- БЛОК ПРОВЕРКИ ЛИМИТА ЗА ЧАС ---
+        # Ищем все транзакции типа 'purchase' за последний час для этого клиента
+        one_hour_ago = datetime.utcnow() - timedelta(hours=1)
+        
+        # Чтобы точно посчитать сумму покупок, в идеале нужно поле purchase_amount в БД.
+        # Если его нет, мы можем суммировать баллы, но это менее точно из-за уровней лояльности.
+        # Предположим, мы добавили колонку purchase_amount или анализируем историю:
+        
+        cursor.execute("""
+            SELECT SUM(CAST(substring(description from 'Покупка на ([0-9.]+) руб') AS FLOAT))
+            FROM transactions 
+            WHERE client_id = %s 
+              AND type = 'purchase' 
+              AND created_at > %s
+        """, (client_id, one_hour_ago))
+        
+        total_spent_last_hour = cursor.fetchone()[0] or 0
+        
+        if (total_spent_last_hour + purchase_amount) > 2500:
+            allowed_now = 2500 - total_spent_last_hour
+            raise HTTPException(
+                status_code=403, 
+                detail=f"Лимит покупок превышен (2500 руб/час). "
+                       f"За последний час куплено на {total_spent_last_hour} руб. "
+                       f"Доступно для начисления: {max(0, allowed_now)} руб."
+            )
+        # --- КОНЕЦ ПРОВЕРКИ ---
+
         cursor.execute("SELECT points, total_earned_points, telegram_id FROM clients WHERE id = %s", (client_id,))
         client = cursor.fetchone()
         if not client:
             raise HTTPException(status_code=404, detail="Клиент не найден")
+            
         level = get_level(client["total_earned_points"])
         multiplier = {"PLATINA": 0.10, "GOLD": 0.07, "SILVER": 0.05, "BRONZE": 0.03, "IRON": 0.01}[level]
+        
         points = max(1, int(purchase_amount * multiplier))
         new_points = client["points"] + points
         new_total = client["total_earned_points"] + points
-        cursor.execute("UPDATE clients SET points = %s, total_earned_points = %s WHERE id = %s", (new_points, new_total, client_id))
+        
+        # Обновляем клиента
+        cursor.execute("UPDATE clients SET points = %s, total_earned_points = %s WHERE id = %s", 
+                       (new_points, new_total, client_id))
+        
+        # Записываем транзакцию
         cursor.execute("""
             INSERT INTO transactions (client_id, staff_id, type, points_change, description)
             VALUES (%s, (SELECT id FROM staff WHERE telegram_id = %s), 'purchase', %s, %s)
         """, (client_id, user.telegram_id, points, f"Покупка на {purchase_amount} руб. (уровень {level})"))
+        
         conn.commit()
+        
+        # Отправка уведомления
         message_text = (
             f"🎉 <b>Бонусы начислены!</b>\n\n"
             f"Покупка на {purchase_amount} руб.\n"
@@ -700,6 +682,7 @@ async def add_points(request: Request, user: AuthUser = Depends(require_staff)):
             f"Текущий баланс: <b>{new_points}</b> баллов."
         )
         asyncio.create_task(send_telegram_message(client["telegram_id"], message_text))
+        
         return {"status": "ok", "new_points": new_points, "points_added": points, "level": level}
 
 @app.post("/api/staff/redeem-gift")
@@ -716,7 +699,6 @@ async def redeem_gift(request: Request, user: AuthUser = Depends(require_staff))
         gift = cursor.fetchone()
         if not gift:
             raise HTTPException(status_code=404, detail="Подарок недоступен")
-        # ЗАПРАШИВАЕМ telegram_id
         cursor.execute("SELECT points, telegram_id FROM clients WHERE id = %s", (client_id,))
         client = cursor.fetchone()
         if not client or client["points"] < gift["points_cost"]:
@@ -729,7 +711,6 @@ async def redeem_gift(request: Request, user: AuthUser = Depends(require_staff))
         """, (client_id, user.telegram_id, -gift["points_cost"], f"Подарок: {gift['name']}"))
         conn.commit()
 
-        # ОТПРАВКА УВЕДОМЛЕНИЯ
         message_text = (
             f"🎁 <b>Подарок получен!</b>\n\n"
             f"Вы обменяли <b>{gift['points_cost']}</b> баллов на:\n"
@@ -778,6 +759,53 @@ async def delete_gift(request: Request, user: AuthUser = Depends(require_admin))
         conn.commit()
         return {"status": "ok"}
 
+@app.post("/api/admin/cancel-transaction")
+@limiter.limit("5/minute")
+async def cancel_transaction(request: Request, user: AuthUser = Depends(require_admin)):
+    body = await request.json()
+    tx_id = body.get("transaction_id")
+    
+    if not tx_id:
+        raise HTTPException(status_code=400, detail="transaction_id required")
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        
+        # 1. Ищем оригинальную транзакцию
+        cursor.execute("SELECT * FROM transactions WHERE id = %s", (tx_id,))
+        tx = cursor.fetchone()
+        
+        if not tx:
+            raise HTTPException(status_code=404, detail="Транзакция не найдена")
+        if tx.get("is_cancelled"):
+            raise HTTPException(status_code=400, detail="Транзакция уже отменена")
+
+        client_id = tx["client_id"]
+        points_to_revert = -tx["points_change"] # Инвертируем изменение
+
+        # 2. Обновляем баланс клиента
+        cursor.execute("""
+            UPDATE clients 
+            SET points = points + %s, 
+                total_earned_points = total_earned_points + %s
+            WHERE id = %s
+        """, (points_to_revert, points_to_revert if points_to_revert > 0 else 0, client_id))
+
+        # 3. Создаем запись об отмене в аудите
+        audit_desc = f"Отмена операции #{tx_id}: {tx['description']}. Возврат {points_to_revert} бонусов."
+        cursor.execute("""
+            INSERT INTO transactions (staff_id, client_id, type, description, points_change, target_id)
+            VALUES ((SELECT id FROM staff WHERE telegram_id = %s), %s, 'transaction_cancelled', %s, %s, %s)
+        """, (user.telegram_id, client_id, audit_desc, points_to_revert, tx_id))
+
+        # 4. Помечаем оригинал как отмененный (нужно добавить колонку is_cancelled в таблицу)
+        cursor.execute("UPDATE transactions SET description = %s WHERE id = %s", 
+                       (f"[ОТМЕНЕНА] {tx['description']}", tx_id))
+        
+        conn.commit()
+        return {"status": "ok", "new_balance": "updated"}
+
+
 
 @app.post("/api/admin/transactions")
 @limiter.limit("5/minute")
@@ -818,27 +846,23 @@ async def create_notification(request: Request, user: AuthUser = Depends(require
     if not title or not description:
         raise HTTPException(status_code=400, detail="Title and description required")
 
-    # Используем timezone-aware datetime для избежания проблем
     expires_at = datetime.utcnow() + timedelta(days=days_valid)
 
     with get_db() as conn:
         cursor = conn.cursor()
         
-        # 1. Создаем уведомление
         cursor.execute("""
             INSERT INTO notifications (type, title, description, image_url, expires_at)
             VALUES (%s, %s, %s, %s, %s)
             RETURNING id
         """, (notif_type, title, description, image_url, expires_at))
         
-        # БЕЗОПАСНОЕ ПОЛУЧЕНИЕ ID:
         row = cursor.fetchone()
         if isinstance(row, dict):
             notif_id = row['id']
         else:
             notif_id = row[0]
 
-        # 2. Логируем действие
         audit_desc = f"Создано уведомление: «{title}» (тип: {notif_type})"
         
         cursor.execute("""
@@ -855,25 +879,6 @@ async def create_notification(request: Request, user: AuthUser = Depends(require
         
         conn.commit()
         return {"status": "ok", "id": notif_id}
-
-# @app.post("/api/admin/create-gift")
-# @limiter.limit("5/minute")
-# async def create_gift(request: Request, user: AuthUser = Depends(require_admin)):
-#     body = await request.json()
-#     name = body.get("name")
-#     points_cost = body.get("points_cost")
-#     image_url = body.get("image_url")
-#     if not name or not points_cost:
-#         raise HTTPException(status_code=400, detail="name and points_cost required")
-#     with get_db() as conn:
-#         cursor = conn.cursor()
-#         cursor.execute("SELECT id FROM gifts WHERE name = %s AND points_cost = %s", (name, points_cost))
-#         if cursor.fetchone():
-#             raise HTTPException(status_code=400, detail="Подарок уже существует")
-#         cursor.execute("INSERT INTO gifts (name, points_cost, image_url) VALUES (%s, %s, %s) RETURNING id, name, points_cost, image_url", (name, points_cost, image_url))
-#         gift = cursor.fetchone()
-#         conn.commit()
-#         return gift
 
 @app.post("/api/admin/create-gift")
 @limiter.limit("5/minute")
@@ -1036,7 +1041,6 @@ async def delete_notification(request: Request, user: AuthUser = Depends(require
 
     with get_db() as conn:
         cursor = conn.cursor()
-        # Получаем данные уведомления ДО удаления (для аудита)
         cursor.execute("""
             SELECT type, title, description FROM notifications WHERE id = %s
         """, (notification_id,))
@@ -1044,10 +1048,8 @@ async def delete_notification(request: Request, user: AuthUser = Depends(require
         if not notif:
             raise HTTPException(status_code=404, detail="Уведомление не найдено")
 
-        # Удаляем
         cursor.execute("DELETE FROM notifications WHERE id = %s", (notification_id,))
         
-        # Логируем в аудит
         audit_desc = f"Удалено уведомление: [{notif['type']}] «{notif['title']}»"
         cursor.execute("""
             INSERT INTO transactions (staff_id, type, description, target_type, target_id, points_change)
@@ -1077,58 +1079,57 @@ async def get_all_notifications(request: Request, user: AuthUser = Depends(requi
         return cursor.fetchall()
 
 # === ГОДОВЩИНА УЧАСТИЯ ===
-@app.post("/api/internal/anniversary-check")
-async def anniversary_check(request: Request):
-    if request.client.host not in ("127.0.0.1", "::1"):
-        raise HTTPException(status_code=403, detail="Forbidden")
-    today = date.today()
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT id, telegram_id, first_name, last_name, created_at
-            FROM clients
-            WHERE EXTRACT(MONTH FROM created_at) = %s
-              AND EXTRACT(DAY FROM created_at) = %s
-              AND created_at <= %s
-        """, (today.month, today.day, today - timedelta(days=365)))
-        clients = cursor.fetchall()
-        if not clients:
-            return {"status": "ok", "message": "Нет годовщин сегодня"}
-        results = []
-        for client in clients:
-            reg_date = client["created_at"].date()
-            years = today.year - reg_date.year
-            try:
-                anniversary_this_year = reg_date.replace(year=today.year)
-            except ValueError:
-                anniversary_this_year = reg_date.replace(year=today.year, day=28)
-            if anniversary_this_year == today and years >= 1:
-                cursor.execute("""
-                    UPDATE clients 
-                    SET points = points + 100, total_earned_points = total_earned_points + 100
-                    WHERE id = %s
-                """, (client["id"],))
-                cursor.execute("""
-                    INSERT INTO transactions (client_id, type, points_change, description)
-                    VALUES (%s, 'anniversary', 100, %s)
-                """, (client["id"], f"Годовщина участия! {years} лет с нами!"))
-                message_text = (
-                    f"🎉 <b>Поздравляем с годовщиной!</b>\n\n"
-                    f"Спасибо, что с нами уже {years} {'год' if years % 10 == 1 and years % 100 != 11 else 'года' if 2 <= years % 10 <= 4 and not (10 <= years % 100 <= 20) else 'лет'}!\n"
-                    f"Вам начислено <b>100</b> бонусов!"
-                )
-                asyncio.create_task(send_telegram_message(client["telegram_id"], message_text))
-                results.append({
-                    "telegram_id": client["telegram_id"],
-                    "name": f"{client['first_name']} {client['last_name']}",
-                    "years": years
-                })
-        conn.commit()
-        return {"status": "ok", "anniversaries": results}
+# @app.post("/api/internal/anniversary-check")
+# async def anniversary_check(request: Request):
+    # if request.client.host not in ("127.0.0.1", "::1"):
+    #     raise HTTPException(status_code=403, detail="Forbidden")
+    # today = date.today()
+    # with get_db() as conn:
+    #     cursor = conn.cursor()
+    #     cursor.execute("""
+    #         SELECT id, telegram_id, first_name, last_name, created_at
+    #         FROM clients
+    #         WHERE EXTRACT(MONTH FROM created_at) = %s
+    #           AND EXTRACT(DAY FROM created_at) = %s
+    #           AND created_at <= %s
+    #     """, (today.month, today.day, today - timedelta(days=365)))
+    #     clients = cursor.fetchall()
+    #     if not clients:
+    #         return {"status": "ok", "message": "Нет годовщин сегодня"}
+    #     results = []
+    #     for client in clients:
+    #         reg_date = client["created_at"].date()
+    #         years = today.year - reg_date.year
+    #         try:
+    #             anniversary_this_year = reg_date.replace(year=today.year)
+    #         except ValueError:
+    #             anniversary_this_year = reg_date.replace(year=today.year, day=28)
+    #         if anniversary_this_year == today and years >= 1:
+    #             cursor.execute("""
+    #                 UPDATE clients 
+    #                 SET points = points + 100, total_earned_points = total_earned_points + 100
+    #                 WHERE id = %s
+    #             """, (client["id"],))
+    #             cursor.execute("""
+    #                 INSERT INTO transactions (client_id, type, points_change, description)
+    #                 VALUES (%s, 'anniversary', 100, %s)
+    #             """, (client["id"], f"Годовщина участия! {years} лет с нами!"))
+    #             message_text = (
+    #                 f"🎉 <b>Поздравляем с годовщиной!</b>\n\n"
+    #                 f"Спасибо, что с нами уже {years} {'год' if years % 10 == 1 and years % 100 != 11 else 'года' if 2 <= years % 10 <= 4 and not (10 <= years % 100 <= 20) else 'лет'}!\n"
+    #                 f"Вам начислено <b>100</b> бонусов!"
+    #             )
+    #             asyncio.create_task(send_telegram_message(client["telegram_id"], message_text))
+    #             results.append({
+    #                 "telegram_id": client["telegram_id"],
+    #                 "name": f"{client['first_name']} {client['last_name']}",
+    #                 "years": years
+    #             })
+    #     conn.commit()
+    #     return {"status": "ok", "anniversaries": results}
 
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
-    # === 1. Проверка IP ===
     client_ip = request.client.host
     telegram_networks = ["149.154.160.0/20", "91.108.4.0/22"]
     if not any(ipaddress.ip_address(client_ip) in ipaddress.ip_network(net) for net in telegram_networks):
@@ -1150,14 +1151,12 @@ async def telegram_webhook(request: Request):
         web_app_url = "https://dwntwn-loyalty-frontend-io.vercel.app".strip()
         send_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
 
-        # === 2. Обработка команд ===
         text = message.get("text", "").strip()
 
         if text == "/start":
             is_registered = False
             role = "client"
 
-            # Проверка регистрации
             try:
                 async with aiohttp.ClientSession() as session:
                     staff_resp = await session.post(f"{backend_url}/api/staff/login", json={"initData": f"user=%7B%22id%22%3A{user_id}%7D"})
@@ -1257,7 +1256,6 @@ async def send_broadcast(request: Request, user: AuthUser = Depends(require_admi
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid input: {e}")
 
-    # Получаем всех клиентов
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT telegram_id FROM clients")
@@ -1282,7 +1280,6 @@ async def send_broadcast(request: Request, user: AuthUser = Depends(require_admi
             telegram_id = client["telegram_id"]
             try:
                 if broadcast.image_url:
-                    # Отправляем фото + подпись
                     payload = {
                         "chat_id": telegram_id,
                         "photo": str(broadcast.image_url),
@@ -1291,7 +1288,6 @@ async def send_broadcast(request: Request, user: AuthUser = Depends(require_admi
                     }
                     url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
                 else:
-                    # Отправляем текст
                     payload = {
                         "chat_id": telegram_id,
                         "text": base_text,
@@ -1314,7 +1310,6 @@ async def send_broadcast(request: Request, user: AuthUser = Depends(require_admi
                 logging.error(f"Исключение при отправке {telegram_id}: {e}")
                 failed_ids.append(telegram_id)
 
-    # Логируем в аудит
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -1346,23 +1341,6 @@ def log_account_deletion(telegram_id: int):
             VALUES (%s, 'account_deleted', %s)
         """, (telegram_id, "Аккаунт удалён"))
         conn.commit()
-
-# === ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ ПРИ СТАРТЕ ===
-# def initialize_database():
-#     from database import get_db_connection
-#     from schemas import init_database
-#     try:
-#         conn = get_db_connection()
-#         init_database(conn)
-#         logging.info("✅ База данных успешно инициализирована")
-#     except Exception as e:
-#         logging.error(f"❌ Ошибка инициализации БД: {e}")
-#         raise
-#     finally:
-#         conn.close()
-
-# initialize_database()
-
 
 if __name__ == "__main__":
     import uvicorn
