@@ -509,34 +509,30 @@ async def staff_login(request: Request, user: AuthUser = Depends(require_staff))
         cursor.execute("SELECT id, name, role FROM staff WHERE telegram_id = %s", (user.telegram_id,))
         staff = cursor.fetchone()
         return staff
-
 @app.post("/api/staff/my-transactions")
 @limiter.limit("10/minute")
 async def get_staff_transactions(request: Request, user: AuthUser = Depends(require_staff)):
     with get_db() as conn:
         cursor = conn.cursor()
         
-        # 1. Получаем ID сотрудника. 
-        # Используем безопасное извлечение, чтобы не было KeyError
         cursor.execute("SELECT id FROM staff WHERE telegram_id = %s", (user.telegram_id,))
         staff_row = cursor.fetchone()
         
         if not staff_row:
             return []
             
-        # Универсальное получение ID (для словаря или кортежа)
         s_id = staff_row["id"] if isinstance(staff_row, dict) else staff_row[0]
 
-        # 2. Основной запрос истории
+        # ИСПРАВЛЕНИЕ: Используем LEFT JOIN и COALESCE для обработки пустых имен
         cursor.execute("""
             SELECT 
                 t.id,
-                CONCAT(c.first_name, ' ', c.last_name) AS client_name,
+                COALESCE(CONCAT(c.first_name, ' ', c.last_name), 'Система/Клиент удален') AS client_name,
                 t.points_change,
                 t.description,
                 t.created_at
             FROM transactions t
-            JOIN clients c ON t.client_id = c.id
+            LEFT JOIN clients c ON t.client_id = c.id
             WHERE t.staff_id = %s
             ORDER BY t.created_at DESC
             LIMIT 100
@@ -546,10 +542,7 @@ async def get_staff_transactions(request: Request, user: AuthUser = Depends(requ
         result = []
         
         for row in rows:
-            # Безопасно достаем дату
             raw_date = row["created_at"]
-            
-            # Превращаем в строку только если это объект datetime
             if isinstance(raw_date, datetime):
                 dt_str = raw_date.strftime("%Y-%m-%d %H:%M")
             else:
@@ -786,7 +779,6 @@ async def delete_gift(request: Request, user: AuthUser = Depends(require_admin))
         
         conn.commit()
         return {"status": "ok"}
-
 @app.post("/api/admin/cancel-transaction")
 @limiter.limit("5/minute")
 async def cancel_transaction(request: Request, user: AuthUser = Depends(require_admin)):
@@ -805,35 +797,44 @@ async def cancel_transaction(request: Request, user: AuthUser = Depends(require_
         
         if not tx:
             raise HTTPException(status_code=404, detail="Транзакция не найдена")
-        if tx.get("is_cancelled"):
-            raise HTTPException(status_code=400, detail="Транзакция уже отменена")
+
+        # ЗАПРЕТ на отмену уже отмененной транзакции или самой записи об отмене
+        if "[ОТМЕНЕНА]" in tx["description"] or tx["type"] == 'transaction_cancelled':
+            raise HTTPException(status_code=400, detail="Эта операция уже отменена или является технической записью")
 
         client_id = tx["client_id"]
-        points_to_revert = -tx["points_change"] # Инвертируем изменение
+        points_to_revert = -tx["points_change"] # Инвертируем: если было +2, станет -2. Если было -10, станет +10.
 
         # 2. Обновляем баланс клиента
+        # total_earned_points меняем только если мы отменяем НАЧИСЛЕНИЕ (points_change был > 0)
+        earned_change = points_to_revert if tx["points_change"] > 0 else 0
+        
         cursor.execute("""
             UPDATE clients 
             SET points = points + %s, 
                 total_earned_points = total_earned_points + %s
             WHERE id = %s
-        """, (points_to_revert, points_to_revert if points_to_revert > 0 else 0, client_id))
+        """, (points_to_revert, earned_change, client_id))
 
-        # 3. Создаем запись об отмене в аудите
-        audit_desc = f"Отмена операции #{tx_id}: {tx['description']}. Возврат {points_to_revert} бонусов."
+        # 3. Формируем КРАСИВОЕ описание для новой транзакции
+        # Убираем технические подробности, оставляем суть для клиента
+        clean_desc = tx['description'].replace("[ОТМЕНЕНА] ", "")
+        if tx["points_change"] > 0:
+            audit_desc = f"Отмена начисления: {clean_desc}"
+        else:
+            audit_desc = f"Возврат баллов: {clean_desc}"
+
         cursor.execute("""
-            INSERT INTO transactions (staff_id, client_id, type, description, points_change, target_id)
-            VALUES ((SELECT id FROM staff WHERE telegram_id = %s), %s, 'transaction_cancelled', %s, %s, %s)
-        """, (user.telegram_id, client_id, audit_desc, points_to_revert, tx_id))
+            INSERT INTO transactions (staff_id, client_id, type, description, points_change)
+            VALUES ((SELECT id FROM staff WHERE telegram_id = %s), %s, 'transaction_cancelled', %s, %s)
+        """, (user.telegram_id, client_id, audit_desc, points_to_revert))
 
-        # 4. Помечаем оригинал как отмененный (нужно добавить колонку is_cancelled в таблицу)
+        # 4. Помечаем оригинал как отмененный в описании
         cursor.execute("UPDATE transactions SET description = %s WHERE id = %s", 
                        (f"[ОТМЕНЕНА] {tx['description']}", tx_id))
         
         conn.commit()
-        return {"status": "ok", "new_balance": "updated"}
-
-
+        return {"status": "ok", "points_reverted": points_to_revert}
 
 @app.post("/api/admin/transactions")
 @limiter.limit("5/minute")
