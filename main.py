@@ -689,11 +689,8 @@ async def delete_gift(request: Request, user: AuthUser = Depends(require_admin))
         if not gift:
             raise HTTPException(status_code=404, detail="Подарок не найден")
 
-        # Вместо физического удаления лучше помечать is_active = false, 
-        # чтобы не ломать историю транзакций
         cursor.execute("UPDATE gifts SET is_active = false WHERE id = %s", (gift_id,))
         
-        # Лог аудита
         audit_desc = f"Админ удалил подарок: «{gift['name']}»"
         cursor.execute("""
             INSERT INTO transactions (staff_id, type, description, points_change)
@@ -768,6 +765,52 @@ async def create_notification(request: Request, user: AuthUser = Depends(require
         notif_id = cursor.fetchone()["id"]
         conn.commit()
         return {"id": notif_id, "status": "ok"}
+
+@app.post("/api/admin/create-gift")
+@limiter.limit("5/minute")
+async def create_gift(request: Request, user: AuthUser = Depends(require_admin)):
+    body = await request.json()
+    name = body.get("name")
+    points_cost = body.get("points_cost")
+    image_url = body.get("image_url")
+
+    if not name or not points_cost:
+        raise HTTPException(status_code=400, detail="name and points_cost required")
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT id FROM gifts WHERE name = %s AND points_cost = %s", (name, points_cost))
+        if cursor.fetchone():
+            raise HTTPException(status_code=400, detail="Подарок уже существует")
+
+        cursor.execute("""
+            INSERT INTO gifts (name, points_cost, image_url, is_active) 
+            VALUES (%s, %s, %s, true) 
+            RETURNING id, name, points_cost, image_url
+        """, (name, points_cost, image_url))
+
+        gift = cursor.fetchone()
+
+        if gift:
+            audit_desc = f"Создан новый подарок: «{name}» за {points_cost} бонусов"
+            cursor.execute("""
+                INSERT INTO transactions (staff_id, type, description, target_type, target_id, points_change)
+                VALUES (
+                    (SELECT id FROM staff WHERE telegram_id = %s),
+                    'gift_created',
+                    %s,
+                    'gift',
+                    %s,
+                    0
+                )
+            """, (user.telegram_id, audit_desc, gift['id']))
+
+            conn.commit()
+
+            asyncio.create_task(broadcast_new_gift(gift['name'], gift['points_cost']))
+
+        return gift
 
 @app.post("/api/admin/add-staff")
 async def add_staff(request: Request, user: AuthUser = Depends(require_admin)):
