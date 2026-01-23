@@ -667,14 +667,19 @@ async def redeem_gift(request: Request, user: AuthUser = Depends(require_staff))
         
 
 # === АДМИНКА ===
-
 def rows_to_dict(cursor):
-    columns = [desc[0] for desc in cursor.description]
     rows = cursor.fetchall()
+    if not rows:
+        return []
+    
+    colnames = [desc[0] for desc in cursor.description]
     
     result = []
     for row in rows:
-        result.append(dict(zip(columns, row)))
+        row_dict = {}
+        for i in range(len(colnames)):
+            row_dict[colnames[i]] = row[i]
+        result.append(row_dict)
     return result
 
 @app.post("/api/admin/gifts")
