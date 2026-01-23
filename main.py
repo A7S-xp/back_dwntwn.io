@@ -396,18 +396,19 @@ async def get_client_transactions(request: Request, user: AuthUser = Depends(get
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT id, type, points_change, description, created_at
+            SELECT id, type, points_change, description, 
+                   TO_CHAR(created_at, 'YYYY-MM-DD"T"HH24:MI:SS') as created_at
             FROM transactions
             WHERE client_id = (SELECT id FROM clients WHERE telegram_id = %s)
             ORDER BY created_at DESC LIMIT 50
         """, (user.telegram_id,))
-        return cursor.fetchall()
+        columns = [desc[0] for desc in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
 @app.post("/api/client/notifications")
 async def get_notifications(request: Request, user: AuthUser = Depends(get_current_user)):
     with get_db() as conn:
         cursor = conn.cursor()
-        # Используем современный datetime.now(timezone.utc)
         now = datetime.now(timezone.utc)
         cursor.execute("""
             SELECT id, type, title, description, image_url, expires_at
@@ -788,26 +789,38 @@ async def add_staff(request: Request, user: AuthUser = Depends(require_admin)):
         conn.commit()
         return {"status": "ok"}
 
-# === ТЕЛЕГРАМ WEBHOOK ===
+@app.post("/api/admin/staff-list")
+async def get_staff_list(user: AuthUser = Depends(get_current_user)):
+    # Здесь логика получения списка сотрудников
+    return [] 
 
+@app.post("/api/admin/clients")
+async def get_clients_list(user: AuthUser = Depends(get_current_user)):
+    # Здесь логика получения списка клиентов
+    return []
+
+@app.post("/api/admin/audit")
+async def get_audit_logs(user: AuthUser = Depends(get_current_user)):
+    return []
+
+# === ТЕЛЕГРАМ WEBHOOK ===
 @app.post("/webhook")
 async def telegram_webhook(request: Request):
-    """
-    Обработка команд /start, /help и кнопки открытия Mini App.
-    """
     data = await request.json()
     if "message" not in data: return {"ok": True}
 
     msg = data["message"]
     chat_id = msg["chat"]["id"]
     user_id = msg["from"]["id"]
-    text = msg.get("text", "")
+    text = msg.get("text", "").lower()
 
     bot_token = os.getenv("BOT_TOKEN")
-    web_app_url = "https://dwntwn-loyalty-frontend-io.vercel.app" # Убедитесь, что URL верный
+    web_app_url = "https://dwntwn-loyalty-frontend-io.vercel.app"
 
-    if text == "/start":
-        # Быстрая проверка регистрации в базе
+    response_text = ""
+    reply_markup = None
+
+    if text == "/start" or text == "/app":
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT 1 FROM clients WHERE telegram_id = %s", (user_id,))
@@ -816,21 +829,45 @@ async def telegram_webhook(request: Request):
             is_staff = cursor.fetchone()
 
         if is_staff:
-            welcome = f"👋 Привет, {is_staff['role']}! Панель управления DWNTWN доступна по кнопке:"
+            response_text = f"👋 Привет! Панель управления <b>DWNTWN</b> доступна по кнопке ниже:"
         elif is_client:
-            welcome = "☕️ Рады видеть вас снова! Ваша карта DWNTWN готова к использованию:"
+            response_text = "☕️ Рады видеть вас снова! Ваша карта <b>DWNTWN</b> готова к использованию:"
         else:
-            welcome = "☕️ Добро пожаловать в DWNTWN!\nЗаполните анкету по кнопке ниже, чтобы получить бонусную карту и подарок при первой покупке."
-
-        kb = {"inline_keyboard": [[{"text": "🎫 Открыть карту", "web_app": {"url": web_app_url}}]]}
+            response_text = "☕️ Добро пожаловать в <b>DWNTWN</b>!\n\nЗаполните анкету, чтобы получить бонусную карту и подарок при первой покупке."
         
-        async with aiohttp.ClientSession() as session:
-            await session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json={
-                "chat_id": chat_id,
-                "text": welcome,
-                "parse_mode": "HTML",
-                "reply_markup": kb
-            })
+        reply_markup = {"inline_keyboard": [[{"text": "🎫 Открыть карту", "web_app": {"url": web_app_url}}]]}
+
+    elif text == "/help":
+        response_text = (
+            "<b>Справка DWNTWN Coffee:</b>\n\n"
+            "🎫 <b>/app</b> — Открыть карту лояльности\n"
+            "❓ <b>/help</b> — Показать это сообщение\n"
+            "ℹ️ <b>/about</b> — О нашей кофейне\n\n"
+            "Если кнопка не появилась, нажмите на иконку 'Open App' слева от поля ввода."
+        )
+
+    elif text == "/about":
+        response_text = (
+            "☕️ <b>DWNTWN Coffee</b>\n\n"
+            "Мы находимся в самом центре города.\n"
+            "Варим спешелти кофе и создаем атмосферу каждый день.\n\n"
+            "📍 <i>Наш адрес: ул. Примерная, 10</i>\n"
+            "⏰ <i>Часы работы: 08:00 - 21:00</i>"
+        )
+    
+    else:
+        return {"ok": True}
+
+    async with aiohttp.ClientSession() as session:
+        payload = {
+            "chat_id": chat_id,
+            "text": response_text,
+            "parse_mode": "HTML"
+        }
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+
+        await session.post(f"https://api.telegram.org/bot{bot_token}/sendMessage", json=payload)
 
     return {"ok": True}
 # === HEALTH CHECK ===
