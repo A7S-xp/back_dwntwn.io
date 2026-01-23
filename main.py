@@ -667,27 +667,22 @@ async def redeem_gift(request: Request, user: AuthUser = Depends(require_staff))
         
 
 # === АДМИНКА ===
-def rows_to_dict(cursor):
-    rows = cursor.fetchall()
-    if not rows:
-        return []
+# def rows_to_dict(cursor):
+#     # Получаем названия колонок
+#     columns = [desc[0] for desc in cursor.description]
+#     # Получаем все данные из базы
+#     rows = cursor.fetchall()
     
-    colnames = [desc[0] for desc in cursor.description]
-    
-    result = []
-    for row in rows:
-        row_dict = {}
-        for i in range(len(colnames)):
-            row_dict[colnames[i]] = row[i]
-        result.append(row_dict)
-    return result
+#     # Склеиваем колонки с данными в словарь
+#     return [dict(zip(columns, row)) for row in rows]
 
 @app.post("/api/admin/gifts")
-async def get_gifts_admin(user: AuthUser = Depends(get_current_user)):
+@limiter.limit("5/minute")
+async def get_all_gifts(request: Request, user: AuthUser = Depends(require_admin)):
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT id, name, points_cost, image_url, is_active FROM gifts ORDER BY points_cost")
-        return rows_to_dict(cursor)
+        cursor.execute("SELECT id, name, points_cost, image_url FROM gifts ORDER BY points_cost")
+        return cursor.fetchall() 
 
 @app.post("/api/admin/gifts/delete")
 async def delete_gift(request: Request):
@@ -906,34 +901,44 @@ async def delete_staff(request: Request, user: AuthUser = Depends(require_admin)
         conn.commit()
         return {"status": "ok"}
 
-
 @app.post("/api/admin/transactions")
-async def get_all_transactions_admin(request: Request, user: AuthUser = Depends(get_current_user)):
+@limiter.limit("5/minute")
+async def get_transactions(request: Request, user: AuthUser = Depends(require_admin)):
+    body = await request.json()
+    start_date = body.get("start_date")
+    end_date = body.get("end_date")
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT 
-                t.id, t.type, t.points_change, t.description, 
-                TO_CHAR(t.created_at, 'YYYY-MM-DD"T"HH24:MI:SS') as created_at, -- Исправит Invalid Date
-                c.first_name || ' ' || c.last_name as client_name
+        query = """
+            SELECT t.id, CONCAT(c.first_name, ' ', c.last_name) as client_name,
+                   t.type, t.points_change, t.description, t.created_at
             FROM transactions t
             JOIN clients c ON t.client_id = c.id
-            ORDER BY t.created_at DESC LIMIT 100
-        """)
-        return rows_to_dict(cursor)
+            WHERE 1=1
+        """
+        params = []
+        if start_date:
+            query += " AND t.created_at >= %s"
+            params.append(start_date)
+        if end_date:
+            query += " AND t.created_at <= %s"
+            params.append(end_date)
+        query += " ORDER BY t.created_at DESC"
+        cursor.execute(query, params)
+
 
 # Получение всех уведомлений для админа (Стена новостей)
 @app.post("/api/admin/all-notifications")
-async def get_admin_notifications(user: AuthUser = Depends(get_current_user)):
+@limiter.limit("10/minute")
+async def get_all_notifications(request: Request, user: AuthUser = Depends(require_admin)):
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT id, type, title, description, image_url,
-                   TO_CHAR(created_at, 'YYYY-MM-DD"T"HH24:MI:SS') as created_at
-            FROM notifications 
+            SELECT id, type, title, description, image_url, expires_at, created_at
+            FROM notifications
             ORDER BY created_at DESC
         """)
-        return rows_to_dict(cursor)
+        return cursor.fetchall()
 
 # # Создание новой новости/новинки
 # @app.post("/api/admin/broadcast")
