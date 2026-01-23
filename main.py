@@ -393,28 +393,27 @@ async def get_profile(request: Request, user: AuthUser = Depends(get_current_use
 @app.post("/api/client/transactions")
 @limiter.limit("10/minute")
 async def get_client_transactions(request: Request, user: AuthUser = Depends(get_current_user)):
+    if user.role != "client":
+        raise HTTPException(status_code=403, detail="Client access required")
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT id, type, points_change, description, 
-                   TO_CHAR(created_at, 'YYYY-MM-DD"T"HH24:MI:SS') as created_at
+            SELECT id, type, points_change, description, created_at
             FROM transactions
             WHERE client_id = (SELECT id FROM clients WHERE telegram_id = %s)
-            ORDER BY created_at DESC LIMIT 50
+            ORDER BY created_at DESC
         """, (user.telegram_id,))
-        columns = [desc[0] for desc in cursor.description]
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        return cursor.fetchall()
 
 @app.post("/api/client/notifications")
+@limiter.limit("10/minute")
 async def get_notifications(request: Request, user: AuthUser = Depends(get_current_user)):
     with get_db() as conn:
         cursor = conn.cursor()
-        now = datetime.now(timezone.utc)
+        now = datetime.utcnow()
         cursor.execute("""
             SELECT id, type, title, description, image_url, expires_at
-            FROM notifications 
-            WHERE expires_at > %s OR expires_at IS NULL 
-            ORDER BY id DESC
+            FROM notifications WHERE expires_at > %s ORDER BY expires_at DESC
         """, (now,))
         return cursor.fetchall()
 
@@ -845,6 +844,26 @@ async def get_admin_audit(request: Request, user: AuthUser = Depends(require_adm
             ORDER BY t.created_at DESC
         """)
         return cursor.fetchall()
+
+@app.post("/api/admin/delete-staff")
+@limiter.limit("5/minute")
+async def delete_staff(request: Request, user: AuthUser = Depends(require_admin)):
+    body = await request.json()
+    staff_id = body.get("staff_id")
+    if not staff_id:
+        raise HTTPException(status_code=400, detail="staff_id required")
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT role FROM staff WHERE id = %s", (staff_id,))
+        staff = cursor.fetchone()
+        if not staff:
+            raise HTTPException(status_code=404, detail="Сотрудник не найден")
+        if staff["role"] == "admin":
+            raise HTTPException(status_code=403, detail="Нельзя удалять администраторов")
+        cursor.execute("DELETE FROM staff WHERE id = %s", (staff_id,))
+        conn.commit()
+        return {"status": "ok"}
+
 
 # === ТЕЛЕГРАМ WEBHOOK ===
 @app.post("/webhook")
