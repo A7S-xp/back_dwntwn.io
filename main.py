@@ -864,6 +864,74 @@ async def delete_staff(request: Request, user: AuthUser = Depends(require_admin)
         conn.commit()
         return {"status": "ok"}
 
+# Вспомогательная функция (если еще не добавил)
+def rows_to_dict(cursor):
+    columns = [desc[0] for desc in cursor.description]
+    return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+@app.post("/api/admin/transactions")
+async def get_all_transactions_admin(request: Request, user: AuthUser = Depends(get_current_user)):
+    # Проверка, что это не обычный клиент
+    if user.role not in ["admin", "staff"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT 
+                t.id, 
+                t.type, 
+                t.points_change, 
+                t.description, 
+                TO_CHAR(t.created_at, 'YYYY-MM-DD"T"HH24:MI:SS') as created_at,
+                c.first_name || ' ' || c.last_name as client_name
+            FROM transactions t
+            JOIN clients c ON t.client_id = c.id
+            ORDER BY t.created_at DESC 
+            LIMIT 100
+        """)
+        return rows_to_dict(cursor)
+
+# Получение всех уведомлений для админа (Стена новостей)
+@app.post("/api/admin/all-notifications")
+async def get_all_notifications_admin(user: AuthUser = Depends(get_current_user)):
+    if user.role not in ["admin", "staff"]:
+        raise HTTPException(status_code=403, detail="Доступ запрещен")
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT 
+                id, 
+                type, 
+                title, 
+                message as description, 
+                image_url, 
+                TO_CHAR(created_at, 'YYYY-MM-DD"T"HH24:MI:SS') as created_at,
+                TO_CHAR(expires_at, 'YYYY-MM-DD"T"HH24:MI:SS') as expires_at
+            FROM notifications 
+            ORDER BY created_at DESC
+        """)
+        return rows_to_dict(cursor)
+
+# # Создание новой новости/новинки
+# @app.post("/api/admin/broadcast")
+# async def create_broadcast(request: Request, user: AuthUser = Depends(get_current_user)):
+#     if user.role not in ["admin", "staff"]:
+#         raise HTTPException(status_code=403, detail="Доступ запрещен")
+    
+#     data = await request.json()
+#     # Ожидаем: title, message, type (news/promo), image_url
+    
+#     with get_db() as conn:
+#         cursor = conn.cursor()
+#         cursor.execute("""
+#             INSERT INTO notifications (type, title, message, image_url, created_at, expires_at)
+#             VALUES (%s, %s, %s, %s, NOW(), NOW() + interval '30 days')
+#             RETURNING id
+#         """, (data.get('type', 'news'), data.get('title'), data.get('message'), data.get('image_url')))
+#         conn.commit()
+#         return {"ok": True, "id": cursor.fetchone()[0]}
 
 # === ТЕЛЕГРАМ WEBHOOK ===
 @app.post("/webhook")
