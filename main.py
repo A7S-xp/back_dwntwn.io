@@ -765,6 +765,42 @@ async def create_notification(request: Request, user: AuthUser = Depends(require
         conn.commit()
         return {"id": notif_id, "status": "ok"}
 
+
+@app.post("/api/admin/delete-notification")
+@limiter.limit("10/minute")
+async def delete_notification(request: Request, user: AuthUser = Depends(require_admin)):
+    body = await request.json()
+    notification_id = body.get("notification_id")
+    if not notification_id:
+        raise HTTPException(status_code=400, detail="notification_id required")
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT type, title, description FROM notifications WHERE id = %s
+        """, (notification_id,))
+        notif = cursor.fetchone()
+        if not notif:
+            raise HTTPException(status_code=404, detail="Уведомление не найдено")
+
+        cursor.execute("DELETE FROM notifications WHERE id = %s", (notification_id,))
+
+        audit_desc = f"Удалено уведомление: [{notif['type']}] «{notif['title']}»"
+        cursor.execute("""
+            INSERT INTO transactions (staff_id, type, description, target_type, target_id, points_change)
+            VALUES (
+                (SELECT id FROM staff WHERE telegram_id = %s),
+                'notification_deleted',
+                %s,
+                'notification',
+                %s,
+                0
+            )
+        """, (user.telegram_id, audit_desc, notification_id))
+
+        conn.commit()
+        return {"status": "ok"}
+
 @app.post("/api/admin/create-gift")
 @limiter.limit("5/minute")
 async def create_gift(request: Request, user: AuthUser = Depends(require_admin)):
