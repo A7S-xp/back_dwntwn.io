@@ -669,36 +669,21 @@ async def redeem_gift(request: Request, user: AuthUser = Depends(require_staff))
 # === АДМИНКА ===
 
 @app.post("/api/admin/gifts")
-@limiter.limit("5/minute")
-async def get_all_gifts(request: Request, user: AuthUser = Depends(require_admin)):
+async def get_gifts_admin(user: AuthUser = Depends(get_current_user)):
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT id, name, points_cost, image_url, is_active FROM gifts ORDER BY points_cost")
-        return cursor.fetchall()
+        return rows_to_dict(cursor)
 
-@app.post("/api/admin/delete-gift")
-@limiter.limit("5/minute")
-async def delete_gift(request: Request, user: AuthUser = Depends(require_admin)):
-    body = await request.json()
-    gift_id = body.get("gift_id")
-    
+@app.post("/api/admin/gifts/delete")
+async def delete_gift(request: Request):
+    data = await request.json()
+    gift_id = data.get("id")
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT name FROM gifts WHERE id = %s", (gift_id,))
-        gift = cursor.fetchone()
-        if not gift:
-            raise HTTPException(status_code=404, detail="Подарок не найден")
-
         cursor.execute("UPDATE gifts SET is_active = false WHERE id = %s", (gift_id,))
-        
-        audit_desc = f"Админ удалил подарок: «{gift['name']}»"
-        cursor.execute("""
-            INSERT INTO transactions (staff_id, type, description, points_change)
-            VALUES ((SELECT id FROM staff WHERE telegram_id = %s), 'gift_deleted', %s, 0)
-        """, (user.telegram_id, audit_desc))
-        
         conn.commit()
-        return {"status": "ok"}
+    return {"ok": True}
 
 @app.post("/api/admin/cancel-transaction")
 @limiter.limit("5/minute")
@@ -907,51 +892,33 @@ async def delete_staff(request: Request, user: AuthUser = Depends(require_admin)
         conn.commit()
         return {"status": "ok"}
 
-# Вспомогательная функция (если еще не добавил)
 def rows_to_dict(cursor):
     columns = [desc[0] for desc in cursor.description]
     return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
 @app.post("/api/admin/transactions")
 async def get_all_transactions_admin(request: Request, user: AuthUser = Depends(get_current_user)):
-    # Проверка, что это не обычный клиент
-    if user.role not in ["admin", "staff"]:
-        raise HTTPException(status_code=403, detail="Access denied")
-
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
             SELECT 
-                t.id, 
-                t.type, 
-                t.points_change, 
-                t.description, 
-                TO_CHAR(t.created_at, 'YYYY-MM-DD"T"HH24:MI:SS') as created_at,
+                t.id, t.type, t.points_change, t.description, 
+                TO_CHAR(t.created_at, 'YYYY-MM-DD"T"HH24:MI:SS') as created_at, -- Исправит Invalid Date
                 c.first_name || ' ' || c.last_name as client_name
             FROM transactions t
             JOIN clients c ON t.client_id = c.id
-            ORDER BY t.created_at DESC 
-            LIMIT 100
+            ORDER BY t.created_at DESC LIMIT 100
         """)
         return rows_to_dict(cursor)
 
 # Получение всех уведомлений для админа (Стена новостей)
 @app.post("/api/admin/all-notifications")
-async def get_all_notifications_admin(user: AuthUser = Depends(get_current_user)):
-    if user.role not in ["admin", "staff"]:
-        raise HTTPException(status_code=403, detail="Доступ запрещен")
-
+async def get_admin_notifications(user: AuthUser = Depends(get_current_user)):
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT 
-                id, 
-                type, 
-                title, 
-                description, 
-                image_url, 
-                TO_CHAR(created_at, 'YYYY-MM-DD"T"HH24:MI:SS') as created_at,
-                TO_CHAR(expires_at, 'YYYY-MM-DD"T"HH24:MI:SS') as expires_at
+            SELECT id, type, title, description, image_url,
+                   TO_CHAR(created_at, 'YYYY-MM-DD"T"HH24:MI:SS') as created_at
             FROM notifications 
             ORDER BY created_at DESC
         """)
