@@ -668,6 +668,15 @@ async def redeem_gift(request: Request, user: AuthUser = Depends(require_staff))
 
 # === АДМИНКА ===
 
+def rows_to_dict(cursor):
+    columns = [desc[0] for desc in cursor.description]
+    rows = cursor.fetchall()
+    
+    result = []
+    for row in rows:
+        result.append(dict(zip(columns, row)))
+    return result
+
 @app.post("/api/admin/gifts")
 async def get_gifts_admin(user: AuthUser = Depends(get_current_user)):
     with get_db() as conn:
@@ -892,9 +901,6 @@ async def delete_staff(request: Request, user: AuthUser = Depends(require_admin)
         conn.commit()
         return {"status": "ok"}
 
-def rows_to_dict(cursor):
-    columns = [desc[0] for desc in cursor.description]
-    return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
 @app.post("/api/admin/transactions")
 async def get_all_transactions_admin(request: Request, user: AuthUser = Depends(get_current_user)):
