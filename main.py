@@ -905,7 +905,7 @@ async def get_all_notifications_admin(user: AuthUser = Depends(get_current_user)
                 id, 
                 type, 
                 title, 
-                message as description, 
+                description, 
                 image_url, 
                 TO_CHAR(created_at, 'YYYY-MM-DD"T"HH24:MI:SS') as created_at,
                 TO_CHAR(expires_at, 'YYYY-MM-DD"T"HH24:MI:SS') as expires_at
