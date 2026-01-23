@@ -790,18 +790,61 @@ async def add_staff(request: Request, user: AuthUser = Depends(require_admin)):
         return {"status": "ok"}
 
 @app.post("/api/admin/staff-list")
-async def get_staff_list(user: AuthUser = Depends(get_current_user)):
-    # Здесь логика получения списка сотрудников
-    return [] 
+@limiter.limit("5/minute")
+async def get_all_staff(request: Request, user: AuthUser = Depends(require_admin)):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, name, role FROM staff ORDER BY id")
+        return cursor.fetchall()
 
 @app.post("/api/admin/clients")
-async def get_clients_list(user: AuthUser = Depends(get_current_user)):
-    # Здесь логика получения списка клиентов
-    return []
+@limiter.limit("5/minute")
+async def get_all_clients(request: Request, user: AuthUser = Depends(require_admin)):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT card_number, first_name, last_name, points, total_earned_points, telegram_id, birth_date
+            FROM clients ORDER BY total_earned_points DESC
+        """)
+        clients = []
+        for row in cursor.fetchall():
+            level = get_level(row["total_earned_points"])
+            clients.append({
+                "card_number": row["card_number"],
+                "first_name": row["first_name"],
+                "last_name": row["last_name"],
+                "points": row["points"],
+                "total_earned_points": row["total_earned_points"],
+                "level": level,
+                "telegram_id": row["telegram_id"],
+                "birth_date": row["birth_date"]
+            })
+        return clients
 
 @app.post("/api/admin/audit")
-async def get_audit_logs(user: AuthUser = Depends(get_current_user)):
-    return []
+@limiter.limit("5/minute")
+async def get_admin_audit(request: Request, user: AuthUser = Depends(require_admin)):
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT 
+                t.id, 
+                t.type,
+                t.description, 
+                t.created_at, 
+                s.name AS staff_name
+            FROM transactions t
+            LEFT JOIN staff s ON t.staff_id = s.id
+            WHERE t.type IN (
+                'gift_deleted', 
+                'gift_created', 
+                'notification_created',  
+                'notification_deleted', 
+                'broadcast_sent'
+            )
+            ORDER BY t.created_at DESC
+        """)
+        return cursor.fetchall()
 
 # === ТЕЛЕГРАМ WEBHOOK ===
 @app.post("/webhook")
