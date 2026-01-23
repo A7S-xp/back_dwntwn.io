@@ -681,7 +681,12 @@ async def redeem_gift(request: Request, user: AuthUser = Depends(require_staff))
 async def get_all_gifts(request: Request, user: AuthUser = Depends(require_admin)):
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT id, name, points_cost, image_url FROM gifts ORDER BY points_cost")
+        cursor.execute("""
+            SELECT id, name, points_cost, image_url 
+            FROM gifts 
+            WHERE is_active = true 
+            ORDER BY points_cost ASC
+        """)
         return cursor.fetchall() 
 
 @app.post("/api/admin/gifts/delete")
@@ -925,6 +930,7 @@ async def get_transactions(request: Request, user: AuthUser = Depends(require_ad
             params.append(end_date)
         query += " ORDER BY t.created_at DESC"
         cursor.execute(query, params)
+        return cursor.fetchall()
 
 
 # Получение всех уведомлений для админа (Стена новостей)
