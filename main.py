@@ -690,14 +690,40 @@ async def get_all_gifts(request: Request, user: AuthUser = Depends(require_admin
         return cursor.fetchall() 
 
 @app.post("/api/admin/gifts/delete")
-async def delete_gift(request: Request):
+async def delete_gift(request: Request, user: AuthUser = Depends(require_admin)):
     data = await request.json()
     gift_id = data.get("id")
+    
+    if not gift_id:
+        raise HTTPException(status_code=400, detail="ID подарка обязателен")
+
     with get_db() as conn:
         cursor = conn.cursor()
-        cursor.execute("UPDATE gifts SET is_active = false WHERE id = %s", (gift_id,))
+        
+        cursor.execute("SELECT name, points_cost FROM gifts WHERE id = %s", (gift_id,))
+        gift = cursor.fetchone()
+        
+        if not gift:
+            raise HTTPException(status_code=404, detail="Подарок не найден")
+
+        cursor.execute("DELETE FROM gifts WHERE id = %s", (gift_id,))
+
+        audit_desc = f"Удален подарок: «{gift['name']}» ({gift['points_cost']} баллов)"
+        cursor.execute("""
+            INSERT INTO transactions (staff_id, type, description, target_type, target_id, points_change)
+            VALUES (
+                (SELECT id FROM staff WHERE telegram_id = %s),
+                'gift_deleted',
+                %s,
+                'gift',
+                %s,
+                0
+            )
+        """, (user.telegram_id, audit_desc, gift_id))
+
         conn.commit()
-    return {"ok": True}
+        
+    return {"ok": True, "message": f"Подарок '{gift['name']}' успешно удален"}
 
 @app.post("/api/admin/cancel-transaction")
 @limiter.limit("5/minute")
