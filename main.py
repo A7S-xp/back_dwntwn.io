@@ -752,16 +752,39 @@ async def cancel_transaction(request: Request, user: AuthUser = Depends(require_
 @app.post("/api/admin/create-notification")
 async def create_notification(request: Request, user: AuthUser = Depends(require_admin)):
     body = await request.json()
-    expires_at = datetime.now(timezone.utc) + timedelta(days=body.get("days_valid", 7))
+    
+    notif_type = body.get("type", "general")
+    title = body.get("title", "Без заголовка")
+    description = body.get("description", "")
+    image_url = body.get("image_url")
+    days_valid = body.get("days_valid", 7)
+    
+    expires_at = datetime.now(timezone.utc) + timedelta(days=days_valid)
 
     with get_db() as conn:
         cursor = conn.cursor()
+        
         cursor.execute("""
             INSERT INTO notifications (type, title, description, image_url, expires_at)
             VALUES (%s, %s, %s, %s, %s) RETURNING id
-        """, (body.get("type"), body.get("title"), body.get("description"), body.get("image_url"), expires_at))
+        """, (notif_type, title, description, image_url, expires_at))
         
         notif_id = cursor.fetchone()["id"]
+
+        audit_desc = f"Создано уведомление: [{notif_type}] «{title}» (на {days_valid} дн.)"
+
+        cursor.execute("""
+            INSERT INTO transactions (staff_id, type, description, target_type, target_id, points_change)
+            VALUES (
+                (SELECT id FROM staff WHERE telegram_id = %s),
+                'notification_created',
+                %s,
+                'notification',
+                %s,
+                0
+            )
+        """, (user.telegram_id, audit_desc, notif_id))
+        
         conn.commit()
         return {"id": notif_id, "status": "ok"}
 
@@ -1031,7 +1054,7 @@ async def telegram_webhook(request: Request):
         elif is_client:
             response_text = "☕️ Рады видеть вас снова! Ваша карта <b>DWNTWN</b> готова к использованию:"
         else:
-            response_text = "☕️ Добро пожаловать в <b>DWNTWN</b>!\n\nЗаполните анкету, чтобы получить бонусную карту и подарок при первой покупке."
+            response_text = "☕️ Добро пожаловать в <b>DWNTWN</b>!\n\nЗаполните анкету, чтобы получить бонусную карту и копить баллы за покупки!"
         
         reply_markup = {"inline_keyboard": [[{"text": "🎫 Открыть карту", "web_app": {"url": web_app_url}}]]}
 
